@@ -1,0 +1,12 @@
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Editor
+.vscode/
+.DS_Store
+
+# Logs locais (se você rodar o scraper manualmente fora do Actions)
+*.log

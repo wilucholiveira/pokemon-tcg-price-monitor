@@ -1,0 +1,35 @@
+{
+  "sites": [
+    {
+      "site": "Loja Pokémon Super",
+      "search_url": "https://lojapokemonsuper.com/?s={query}&post_type=product",
+      "strategy": "woocommerce_search"
+    },
+    {
+      "site": "Mercado Livre",
+      "search_url": "https://lista.mercadolivre.com.br/{query}",
+      "strategy": "mercadolivre_search"
+    },
+    {
+      "site": "Amazon BR",
+      "search_url": "https://www.amazon.com.br/s?k={query}",
+      "strategy": "amazon_search"
+    }
+  ],
+  "products": [
+    {
+      "name": "Box Display Fogo Fantasmagórico",
+      "search_query": "box fogo fantasmagorico pokemon",
+      "type": "box",
+      "market": "BR"
+    },
+    {
+      "name": "Charizard ex 199/165 Fogo Fantasmagórico PT-BR",
+      "search_query": "charizard ex fogo fantasmagorico 199 165",
+      "card_number": "199/165",
+      "type": "card",
+      "market": "BR"
+    }
+  ],
+  "_instructions": "Edite esta lista e faça commit + push — o GitHub Actions roda a busca automaticamente no próximo agendamento (ou dispare manualmente na aba Actions do repositório). Cards avulsos: preencha 'card_number' pra evitar pegar a versão errada da carta."
+}

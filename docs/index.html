@@ -1,0 +1,305 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Binder — Monitor de Preços Pokémon TCG</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
+  :root {
+    --bg: #0F1220; --panel: #171B2C; --panel2: #1D2237; --border: #2A2F49;
+    --text: #EDEAE0; --muted: #8B90A8; --teal: #17D6B0; --magenta: #FF4FA3;
+    --gold: #E8B93F; --red: #FF6B6B; --green: #35D48A;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: 'Inter', sans-serif; }
+  .header { border-bottom: 1px solid var(--border); padding: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .brand { font-family: 'Barlow Condensed', sans-serif; font-size: 24px; font-weight: 800; }
+  .brand .binder { background: linear-gradient(90deg, var(--teal), var(--magenta)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .brand .sub { color: var(--muted); font-size: 13px; font-weight: 500; font-family: 'Inter', sans-serif; margin-left: 8px; }
+  button { font-family: 'Inter', sans-serif; cursor: pointer; border: none; }
+  .btn-primary { background: var(--gold); color: #171307; font-weight: 600; padding: 8px 14px; border-radius: 999px; font-size: 14px; }
+  .btn-primary:disabled { opacity: 0.6; cursor: default; }
+  .container { padding: 16px; max-width: 900px; margin: 0 auto; }
+  .muted { color: var(--muted); }
+  .grid { display: grid; grid-template-columns: 1fr; gap: 12px; }
+  @media (min-width: 640px) { .grid { grid-template-columns: 1fr 1fr; } }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 16px; padding: 16px; cursor: pointer; }
+  .card:hover { filter: brightness(1.1); }
+  .card-type { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin-bottom: 6px; }
+  .card-name { font-family: 'Barlow Condensed', sans-serif; font-weight: 600; font-size: 18px; margin-bottom: 8px; }
+  .card-price { font-family: 'JetBrains Mono', monospace; font-size: 24px; font-weight: 700; color: var(--teal); }
+  .card-meta { font-size: 12px; color: var(--muted); margin-top: 4px; }
+  .stamp { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--gold); color: var(--gold); font-family: 'JetBrains Mono', monospace; font-weight: 700; font-size: 11px; flex-shrink: 0; }
+  .ticket { background: linear-gradient(135deg, var(--panel2), var(--panel)); border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin-bottom: 16px; display: flex; justify-content: space-between; align-items: center; }
+  .ticket-price { font-family: 'JetBrains Mono', monospace; font-size: 36px; font-weight: 700; background: linear-gradient(90deg, var(--teal), var(--magenta)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+  .row { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+  .period-tabs { display: flex; gap: 4px; margin: 12px 0; }
+  .period-tabs button { background: transparent; color: var(--muted); border: 1px solid var(--border); font-size: 12px; font-weight: 600; padding: 4px 12px; border-radius: 999px; font-family: 'JetBrains Mono', monospace; }
+  .period-tabs button.active { background: var(--gold); color: #171307; border-color: var(--gold); }
+  .chart-box { background: var(--panel); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+  .back-btn { background: transparent; color: var(--muted); font-size: 14px; }
+  .empty { border: 1px dashed var(--border); color: var(--muted); border-radius: 16px; padding: 40px; text-align: center; font-size: 14px; }
+  .section-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin: 20px 0 8px; }
+</style>
+</head>
+<body>
+  <div class="header">
+    <div class="brand"><span class="binder">BINDER</span><span class="sub">monitor de preços TCG</span></div>
+    <button id="backBtn" class="back-btn" style="display:none">← voltar</button>
+  </div>
+  <div class="container" id="app">
+    <p class="muted">Carregando...</p>
+  </div>
+
+<script>
+const API = "./data.json";
+let state = { history: [], latest: {}, lastRun: null, view: "dashboard", selected: null, period: 'today', chart: null };
+
+const PERIODS = [
+  { id: 'today', label: 'Hoje', mode: 'hour' },
+  { id: '7', label: '7D', mode: 'day', days: 7 },
+  { id: '30', label: '1M', mode: 'day', days: 30 },
+  { id: '90', label: '3M', mode: 'day', days: 90 },
+  { id: '180', label: '6M', mode: 'day', days: 180 },
+  { id: '365', label: '1A', mode: 'day', days: 365 },
+];
+
+function fmtPrice(v, market) {
+  if (v == null) return "—";
+  return (market === "BR" ? "R$ " : "US$ ") + Number(v).toFixed(2);
+}
+function fmtDate(iso) {
+  const d = new Date(iso + "T00:00:00");
+  return d.toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
+}
+function fmtTime(timestampUTC) {
+  // timestamp vem em UTC (ex: "2026-08-23T17:05+00:00"); converte pra horário de Brasília
+  const d = new Date(timestampUTC);
+  return d.toLocaleTimeString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', minute: '2-digit' });
+}
+function fmtDateTime(timestampUTC, dateOnly) {
+  if (!timestampUTC) return fmtDate(dateOnly);
+  const d = new Date(timestampUTC);
+  const datePart = d.toLocaleDateString('pt-BR', { timeZone: 'America/Sao_Paulo', day: '2-digit', month: 'short' });
+  const timePart = fmtTime(timestampUTC);
+  return `${datePart}, ${timePart}`;
+}
+
+async function loadData() {
+  const res = await fetch(API + "?t=" + Date.now()); // evita cache velho do navegador
+  const data = await res.json();
+  state.history = data.history || [];
+  state.latest = data.latest || {};
+  state.lastRun = data.lastRun;
+  render();
+}
+
+function itemNames() {
+  return Object.keys(state.latest);
+}
+
+function bestQuoteFor(name) {
+  const sites = state.latest[name] || {};
+  const entries = Object.entries(sites);
+  if (entries.length === 0) return null;
+  entries.sort((a, b) => (b[1].price || 0) - (a[1].price || 0)); // sem confiabilidade aqui, só pega mais recente
+  return { site: entries[0][0], ...entries[0][1] };
+}
+
+function itemMarket(name) {
+  const row = state.history.find(h => h.item === name);
+  return row ? row.market : "BR";
+}
+function itemType(name) {
+  const row = state.history.find(h => h.item === name);
+  return row ? row.type : "box";
+}
+
+function renderDashboard() {
+  const app = document.getElementById('app');
+  document.getElementById('backBtn').style.display = 'none';
+  const names = itemNames();
+
+  let lastRunHtml = '';
+  if (state.lastRun) {
+    lastRunHtml = `<p class="muted" style="font-size:12px">última execução: ${fmtDateTime(state.lastRun.timestamp, state.lastRun.date)} · ${state.lastRun.okCount || 0} preço(s) encontrados · atualiza sozinho a cada 1 hora</p>`;
+  }
+
+  if (names.length === 0) {
+    app.innerHTML = `
+      <div style="margin-bottom:12px">
+        <span class="muted" style="font-size:14px">0 itens monitorados</span>
+      </div>
+      ${lastRunHtml}
+      <div class="empty">Nenhum dado ainda. O GitHub Actions ainda não rodou a primeira busca — vá na aba <b>Actions</b> do repositório e clique em "Run workflow" pra rodar agora, sem esperar o agendamento de amanhã.<br><br>Pra adicionar produtos, edite <code>products.json</code> no repositório e faça commit.</div>
+    `;
+    return;
+  }
+
+  const cards = names.map(name => {
+    const q = bestQuoteFor(name);
+    const market = itemMarket(name);
+    const type = itemType(name);
+    return `
+      <div class="card" onclick="openItem('${name.replace(/'/g, "\\'")}')">
+        <div class="card-type">${type} · ${market}</div>
+        <div class="card-name">${name}</div>
+        <div class="card-price">${q ? fmtPrice(q.price, market) : 'sem cotação'}</div>
+        ${q ? `<div class="card-meta">via ${q.site} · ${fmtDateTime(q.timestamp, q.date)}</div>` : ''}
+      </div>
+    `;
+  }).join('');
+
+  app.innerHTML = `
+    <div style="margin-bottom:12px">
+      <span class="muted" style="font-size:14px">${names.length} item(ns) monitorado(s)</span>
+    </div>
+    ${lastRunHtml}
+    <div class="grid">${cards}</div>
+  `;
+}
+
+function historyForItem(name, periodId) {
+  const period = PERIODS.find(p => p.id === periodId) || PERIODS[1];
+  const rows = state.history.filter(h => h.item === name);
+
+  if (period.mode === 'hour') {
+    // "Hoje": últimas 24h, agrupado por hora, usando o timestamp (convertido pra Brasília)
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const todayRows = rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= cutoff);
+    const byHour = {};
+    todayRows.forEach(r => {
+      const d = new Date(r.timestamp);
+      const hourLabel = d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }) + 'h';
+      byHour[hourLabel] = byHour[hourLabel] || { prices: [], sortKey: d.getTime() };
+      byHour[hourLabel].prices.push(r.price);
+      byHour[hourLabel].sortKey = Math.min(byHour[hourLabel].sortKey, d.getTime());
+    });
+    return Object.entries(byHour)
+      .map(([label, { prices, sortKey }]) => ({
+        label,
+        price: Math.round((prices.reduce((a, b) => a + b, 0) / prices.length) * 100) / 100,
+        sortKey,
+      }))
+      .sort((a, b) => a.sortKey - b.sortKey);
+  }
+
+  // Períodos por dia (7D, 1M, 3M, 6M, 1A)
+  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - period.days);
+  const dayRows = rows.filter(r => new Date(r.date + 'T00:00:00') >= cutoff);
+  const byDate = {};
+  dayRows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r.price); });
+  return Object.keys(byDate).sort().map(date => ({
+    date, label: fmtDate(date),
+    price: Math.round((byDate[date].reduce((a, b) => a + b, 0) / byDate[date].length) * 100) / 100,
+  }));
+}
+
+function renderItem(name) {
+  const app = document.getElementById('app');
+  document.getElementById('backBtn').style.display = 'inline-block';
+  const market = itemMarket(name);
+  const type = itemType(name);
+  const sites = state.latest[name] || {};
+  const q = bestQuoteFor(name);
+
+  const rowsHtml = Object.entries(sites).map(([site, data]) => `
+    <div class="row">
+      <div>
+        <div style="font-size:14px; font-weight:500">${site}</div>
+        <div class="muted" style="font-size:12px">${fmtDateTime(data.timestamp, data.date)}</div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace; font-weight:600">${fmtPrice(data.price, market)}</div>
+    </div>
+  `).join('') || `<div class="empty">Nenhum preço registrado ainda pra este item.</div>`;
+
+  const periodTabsHtml = PERIODS.map(p => `<button class="${state.period === p.id ? 'active' : ''}" onclick="setPeriod('${p.id}')">${p.label}</button>`).join('');
+
+  app.innerHTML = `
+    <div class="card-type">${type} · ${market === 'BR' ? 'Brasil' : 'Internacional'}</div>
+    <div class="card-name" style="font-size:24px; margin-bottom:16px">${name}</div>
+    <div class="ticket">
+      <div>
+        <div class="muted" style="font-size:12px; margin-bottom:4px">preço de referência</div>
+        <div class="ticket-price">${q ? fmtPrice(q.price, market) : '—'}</div>
+        ${q ? `<div class="muted" style="font-size:12px; margin-top:4px">via ${q.site} · ${fmtDateTime(q.timestamp, q.date)}</div>` : ''}
+      </div>
+    </div>
+    <div class="section-title">cotações por site</div>
+    ${rowsHtml}
+    <div class="section-title">histórico</div>
+    <div class="period-tabs">${periodTabsHtml}</div>
+    <div class="chart-box"><canvas id="priceChart" height="180"></canvas></div>
+  `;
+
+  drawChart(name);
+}
+
+function drawChart(name) {
+  const data = historyForItem(name, state.period);
+  const ctx = document.getElementById('priceChart').getContext('2d');
+  if (state.chart) state.chart.destroy();
+
+  if (data.length < 2) {
+    ctx.fillStyle = '#8B90A8';
+    ctx.font = '13px Inter';
+    ctx.fillText('Dados insuficientes para este período.', 10, 90);
+    return;
+  }
+
+  state.chart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: data.map(d => d.label),
+      datasets: [{
+        label: 'preço médio',
+        data: data.map(d => d.price),
+        borderColor: '#17D6B0',
+        backgroundColor: 'rgba(23,214,176,0.15)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 2,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8B90A8', font: { size: 11 } }, grid: { color: '#2A2F49' } },
+        y: { ticks: { color: '#8B90A8', font: { size: 11 } }, grid: { color: '#2A2F49' } },
+      }
+    }
+  });
+}
+
+function openItem(name) {
+  state.view = 'item';
+  state.selected = name;
+  state.period = 'today';
+  render();
+}
+function setPeriod(days) {
+  state.period = days;
+  render();
+}
+function goBack() {
+  state.view = 'dashboard';
+  state.selected = null;
+  render();
+}
+
+function render() {
+  if (state.view === 'item' && state.selected) {
+    renderItem(state.selected);
+  } else {
+    renderDashboard();
+  }
+}
+
+document.getElementById('backBtn').addEventListener('click', goBack);
+loadData();
+</script>
+</body>
+</html>

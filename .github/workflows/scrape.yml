@@ -1,0 +1,36 @@
+name: Atualizar preços Pokémon TCG
+
+on:
+  schedule:
+    # A cada 1 hora, todo dia
+    - cron: "0 * * * *"
+  workflow_dispatch: {}  # permite rodar manualmente pela aba "Actions" no GitHub
+
+permissions:
+  contents: write  # necessário pra o workflow poder dar commit/push dos dados
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Baixar o repositório
+        uses: actions/checkout@v4
+
+      - name: Configurar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependências
+        run: pip install -r requirements.txt
+
+      - name: Rodar o scraper
+        run: python3 price_scraper.py
+
+      - name: Salvar resultado no repositório
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add docs/data.json
+          git diff --staged --quiet || git commit -m "Atualiza preços ($(date -u +'%Y-%m-%d'))"
+          git push
