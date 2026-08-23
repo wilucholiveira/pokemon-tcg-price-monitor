@@ -54,7 +54,8 @@
   </div>
 
 <script>
-const API = "https://pokemon-price-search.wilucholiveira.workers.dev";
+const API = "./data.json";
+const SEARCH_API = "https://pokemon-price-search.wilucholiveira.workers.dev"; // ex: https://pokemon-price-search.seu-usuario.workers.dev
 let state = { history: [], latest: {}, lastRun: null, view: "dashboard", selected: null, period: 'today', chart: null };
 
 const PERIODS = [
@@ -117,10 +118,68 @@ function itemType(name) {
   return row ? row.type : "box";
 }
 
+async function liveSearch() {
+  const input = document.getElementById('searchInput');
+  const query = input.value.trim();
+  const resultsBox = document.getElementById('searchResults');
+
+  if (!SEARCH_API) {
+    resultsBox.innerHTML = `<div class="empty">A busca ao vivo ainda não foi configurada — falta colar a URL do Cloudflare Worker no topo deste arquivo (veja o README).</div>`;
+    return;
+  }
+  if (query.length < 3) {
+    resultsBox.innerHTML = `<div class="empty">Digite pelo menos 3 letras.</div>`;
+    return;
+  }
+
+  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando em Loja Pokémon Super, Mercado Livre e Amazon...</p>`;
+
+  try {
+    const res = await fetch(`${SEARCH_API}?q=${encodeURIComponent(query)}`);
+    const data = await res.json();
+    const found = (data.results || []).filter(r => r.price !== null);
+    const notFound = (data.results || []).filter(r => r.price === null);
+
+    if (found.length === 0) {
+      resultsBox.innerHTML = `<div class="empty">Nenhum preço encontrado pra "${query}". Tente um termo mais específico, ou o(s) site(s) podem ter bloqueado a busca agora.</div>`;
+      return;
+    }
+
+    const rowsHtml = found.map(r => `
+      <a href="${r.url || '#'}" target="_blank" rel="noopener" class="row" style="text-decoration:none; color:inherit">
+        <div>
+          <div style="font-size:14px; font-weight:500">${r.site}</div>
+          <div class="muted" style="font-size:11px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${r.title || ''}</div>
+        </div>
+        <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--teal)">R$ ${r.price.toFixed(2)}</div>
+      </a>
+    `).join('');
+
+    const notFoundNote = notFound.length > 0
+      ? `<p class="muted" style="font-size:11px; margin-top:6px">sem resultado em: ${notFound.map(r => r.site).join(', ')}</p>`
+      : '';
+
+    resultsBox.innerHTML = rowsHtml + notFoundNote;
+  } catch (e) {
+    resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
+  }
+}
+
 function renderDashboard() {
   const app = document.getElementById('app');
   document.getElementById('backBtn').style.display = 'none';
   const names = itemNames();
+
+  const searchBoxHtml = `
+    <div class="section-title">buscar produto ao vivo</div>
+    <div style="display:flex; gap:8px; margin-bottom:8px">
+      <input id="searchInput" type="text" placeholder="ex: box fogo fantasmagorico"
+        style="flex:1; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'Inter',sans-serif; font-size:14px"
+        onkeydown="if(event.key==='Enter') liveSearch()" />
+      <button class="btn-primary" onclick="liveSearch()">buscar</button>
+    </div>
+    <div id="searchResults" style="margin-bottom:20px"></div>
+  `;
 
   let lastRunHtml = '';
   if (state.lastRun) {
@@ -129,6 +188,7 @@ function renderDashboard() {
 
   if (names.length === 0) {
     app.innerHTML = `
+      ${searchBoxHtml}
       <div style="margin-bottom:12px">
         <span class="muted" style="font-size:14px">0 itens monitorados</span>
       </div>
@@ -153,6 +213,8 @@ function renderDashboard() {
   }).join('');
 
   app.innerHTML = `
+    ${searchBoxHtml}
+    <div class="section-title">itens monitorados</div>
     <div style="margin-bottom:12px">
       <span class="muted" style="font-size:14px">${names.length} item(ns) monitorado(s)</span>
     </div>
@@ -303,3 +365,4 @@ loadData();
 </script>
 </body>
 </html>
+
