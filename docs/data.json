@@ -1,5 +1,12 @@
 {
   "history": [],
-  "latest": {},
-  "lastRun": null
+  "latest": {
+    "Box Display Fogo Fantasmagórico": {},
+    "Charizard ex 199/165 Fogo Fantasmagórico PT-BR": {}
+  },
+  "lastRun": {
+    "date": "2026-08-23",
+    "timestamp": "2026-08-23T23:28+00:00",
+    "okCount": 0
+  }
 }
