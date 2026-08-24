@@ -42,6 +42,19 @@
   .back-btn { background: transparent; color: var(--muted); font-size: 14px; }
   .empty { border: 1px dashed var(--border); color: var(--muted); border-radius: 16px; padding: 40px; text-align: center; font-size: 14px; }
   .section-title { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; margin: 20px 0 8px; }
+  .search-block { background: var(--panel2); border: 1px solid var(--border); border-radius: 14px; padding: 14px; margin-bottom: 12px; }
+  .search-block-label { font-family: 'Barlow Condensed', sans-serif; font-weight: 700; font-size: 15px; margin-bottom: 2px; }
+  .search-block-hint { color: var(--muted); font-size: 11px; margin-bottom: 8px; }
+  .search-wrap { position: relative; flex: 1; }
+  .autocomplete-list { position: absolute; top: 100%; left: 0; right: 0; background: var(--panel); border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; z-index: 20; max-height: 220px; overflow-y: auto; }
+  .autocomplete-item { padding: 8px 12px; font-size: 13px; cursor: pointer; }
+  .autocomplete-item:hover { background: var(--panel2); }
+  select.filter-select { background: var(--panel); border: 1px solid var(--border); color: var(--text); border-radius: 999px; padding: 6px 12px; font-family: 'Inter', sans-serif; font-size: 12px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
+  @media (min-width: 480px) { .stats-grid { grid-template-columns: repeat(5, 1fr); } }
+  .stat-box { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px; }
+  .stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: 0.04em; }
+  .stat-value { font-family: 'JetBrains Mono', monospace; font-size: 14px; font-weight: 700; margin-top: 2px; }
 </style>
 </head>
 <body>
@@ -56,15 +69,16 @@
 <script>
 const API = "./data.json";
 const SEARCH_API = "https://pokemon-price-search.wilucholiveira.workers.dev"; // ex: https://pokemon-price-search.seu-usuario.workers.dev
-let state = { history: [], latest: {}, lastRun: null, view: "dashboard", selected: null, period: 'today', chart: null };
+const AUTOCOMPLETE_API = "https://api.pokemontcg.io/v2/cards"; // API pública gratuita, só pra sugestões de nome (não usada pra preço)
+let state = { history: [], latest: {}, lastRun: null, view: "dashboard", selected: null, period: 'monthly', chart: null, typeFilter: 'all' };
+let autocompleteTimer = null;
 
 const PERIODS = [
   { id: 'today', label: 'Hoje', mode: 'hour' },
-  { id: '7', label: '7D', mode: 'day', days: 7 },
-  { id: '30', label: '1M', mode: 'day', days: 30 },
-  { id: '90', label: '3M', mode: 'day', days: 90 },
-  { id: '180', label: '6M', mode: 'day', days: 180 },
-  { id: '365', label: '1A', mode: 'day', days: 365 },
+  { id: 'monthly', label: 'Mensal', mode: 'month', buckets: 12 },
+  { id: 'quarterly', label: 'Trimestral', mode: 'quarter', buckets: 8 },
+  { id: 'semiannual', label: 'Semestral', mode: 'semester', buckets: 4 },
+  { id: 'annual', label: 'Anual', mode: 'year', buckets: 5 },
 ];
 
 function fmtPrice(v, market) {
@@ -118,56 +132,119 @@ function itemType(name) {
   return row ? row.type : "box";
 }
 
-async function liveSearch() {
-  const input = document.getElementById('searchInput');
-  const query = input.value.trim();
-  const cardNumber = document.getElementById('cardNumberInput').value.trim();
-  const resultsBox = document.getElementById('searchResults');
+function isSealedType(type) {
+  return type && type !== 'card';
+}
+
+function distinctSealedTypes() {
+  const types = new Set();
+  state.history.forEach(h => { if (isSealedType(h.type)) types.add(h.type); });
+  return Array.from(types).sort();
+}
+
+async function fetchAutocomplete(term) {
+  const box = document.getElementById('autocompleteBox');
+  if (!term || term.trim().length < 3) { box.innerHTML = ''; box.style.display = 'none'; return; }
+  try {
+    const res = await fetch(`${AUTOCOMPLETE_API}?q=name:${encodeURIComponent(term.trim())}*&pageSize=8&select=name`);
+    if (!res.ok) throw new Error('falha na API de sugestões');
+    const data = await res.json();
+    const names = Array.from(new Set((data.data || []).map(c => c.name))).slice(0, 8);
+    if (names.length === 0) { box.innerHTML = ''; box.style.display = 'none'; return; }
+    box.innerHTML = names.map(n => `<div class="autocomplete-item" onmousedown="selectSuggestion('${n.replace(/'/g, "\\'")}')">${n}</div>`).join('');
+    box.style.display = 'block';
+  } catch (e) {
+    // Sugestão é um "nice to have" — se a API pública falhar ou estiver fora do ar,
+    // a busca por nome continua funcionando normalmente, só sem a lista de sugestões.
+    box.innerHTML = '';
+    box.style.display = 'none';
+  }
+}
+
+function onNameInput(value) {
+  clearTimeout(autocompleteTimer);
+  autocompleteTimer = setTimeout(() => fetchAutocomplete(value), 300); // debounce, evita 1 requisição por tecla
+}
+
+function selectSuggestion(name) {
+  document.getElementById('nameSearchInput').value = name;
+  document.getElementById('autocompleteBox').style.display = 'none';
+  liveSearchByName();
+}
+
+async function liveSearchByName() {
+  const query = document.getElementById('nameSearchInput').value.trim();
+  const resultsBox = document.getElementById('nameSearchResults');
+  document.getElementById('autocompleteBox').style.display = 'none';
 
   if (!SEARCH_API) {
-    resultsBox.innerHTML = `<div class="empty">A busca ao vivo ainda não foi configurada — falta colar a URL do Cloudflare Worker no topo deste arquivo (veja o README).</div>`;
+    resultsBox.innerHTML = `<div class="empty">Busca ao vivo ainda não configurada — falta a URL do Worker (veja o README).</div>`;
     return;
   }
-  if (query.length < 3 && !cardNumber) {
-    resultsBox.innerHTML = `<div class="empty">Digite pelo menos 3 letras no nome, ou preencha o número da carta.</div>`;
+  if (query.length < 3) {
+    resultsBox.innerHTML = `<div class="empty">Digite pelo menos 3 letras.</div>`;
     return;
   }
-  // Se só o número da carta foi preenchido, usa ele como termo de busca também
-  const effectiveQuery = query.length >= 3 ? query : cardNumber;
 
-  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando${cardNumber ? ' (carta nº ' + cardNumber + ')' : ''}...</p>`;
+  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando "${query}" em produtos lacrados e cards avulsos...</p>`;
 
   try {
-    const params = new URLSearchParams({ q: effectiveQuery });
-    if (cardNumber) params.set('cardNumber', cardNumber);
-    const res = await fetch(`${SEARCH_API}?${params.toString()}`);
+    const res = await fetch(`${SEARCH_API}?mode=name&q=${encodeURIComponent(query)}`);
     const data = await res.json();
-    const found = (data.results || []).filter(r => r.price !== null);
-    const notFound = (data.results || []).filter(r => r.price === null);
-
-    if (found.length === 0) {
-      resultsBox.innerHTML = `<div class="empty">Nenhum preço encontrado pra "${query}". Tente um termo mais específico, ou o(s) site(s) podem ter bloqueado a busca agora.</div>`;
-      return;
-    }
-
-    const rowsHtml = found.map(r => `
-      <a href="${r.url || '#'}" target="_blank" rel="noopener" class="row" style="text-decoration:none; color:inherit">
-        <div>
-          <div style="font-size:14px; font-weight:500">${r.site}</div>
-          <div class="muted" style="font-size:11px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${r.title || ''}</div>
-        </div>
-        <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--teal)">R$ ${r.price.toFixed(2)}</div>
-      </a>
-    `).join('');
-
-    const notFoundNote = notFound.length > 0
-      ? `<p class="muted" style="font-size:11px; margin-top:6px">sem resultado em: ${notFound.map(r => r.site).join(', ')}</p>`
-      : '';
-
-    resultsBox.innerHTML = rowsHtml + notFoundNote;
+    renderSearchResults(data, resultsBox, query);
   } catch (e) {
     resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
   }
+}
+
+async function liveSearchByCode() {
+  const cardNumber = document.getElementById('codeSearchInput').value.trim();
+  const resultsBox = document.getElementById('codeSearchResults');
+
+  if (!SEARCH_API) {
+    resultsBox.innerHTML = `<div class="empty">Busca ao vivo ainda não configurada — falta a URL do Worker (veja o README).</div>`;
+    return;
+  }
+  if (!cardNumber || !/^[A-Za-z0-9]+\/[A-Za-z0-9]+$/.test(cardNumber)) {
+    resultsBox.innerHTML = `<div class="empty">Digite o código no formato número/total, ex: 199/165 ou SV001/SV102.</div>`;
+    return;
+  }
+
+  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando carta nº ${cardNumber} (só em sites de cards avulsos: MyP Cards, CardTrader)...</p>`;
+
+  try {
+    const res = await fetch(`${SEARCH_API}?mode=code&cardNumber=${encodeURIComponent(cardNumber)}`);
+    const data = await res.json();
+    renderSearchResults(data, resultsBox, cardNumber);
+  } catch (e) {
+    resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
+  }
+}
+
+function renderSearchResults(data, resultsBox, term) {
+  const found = (data.results || []).filter(r => r.price !== null);
+  const notFound = (data.results || []).filter(r => r.price === null);
+
+  if (found.length === 0) {
+    resultsBox.innerHTML = `<div class="empty">Nenhum preço encontrado pra "${term}". Tente um termo mais específico, ou o(s) site(s) podem ter bloqueado a busca agora.</div>`;
+    return;
+  }
+
+  const rowsHtml = found.map(r => `
+    <a href="${r.url || '#'}" target="_blank" rel="noopener" class="row" style="text-decoration:none; color:inherit">
+      <div>
+        <div style="font-size:14px; font-weight:500">${r.site}</div>
+        <div class="muted" style="font-size:11px; max-width:220px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap">${r.title || ''}</div>
+      </div>
+      <div style="font-family:'JetBrains Mono',monospace; font-weight:600; color:var(--teal)">R$ ${r.price.toFixed(2)}</div>
+    </a>
+  `).join('');
+
+  const notFoundNote = notFound.length > 0
+    ? `<p class="muted" style="font-size:11px; margin-top:6px">sem resultado em: ${notFound.map(r => r.site).join(', ')}</p>`
+    : '';
+
+  resultsBox.innerHTML = rowsHtml + notFoundNote;
 }
 
 function renderDashboard() {
@@ -176,17 +253,35 @@ function renderDashboard() {
   const names = itemNames();
 
   const searchBoxHtml = `
-    <div class="section-title">buscar produto ao vivo</div>
-    <div style="display:flex; gap:8px; margin-bottom:8px">
-      <input id="searchInput" type="text" placeholder="ex: box fogo fantasmagorico"
-        style="flex:1; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'Inter',sans-serif; font-size:14px"
-        onkeydown="if(event.key==='Enter') liveSearch()" />
-      <input id="cardNumberInput" type="text" placeholder="nº carta (opcional, ex: 199/165)"
-        style="width:170px; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'JetBrains Mono',monospace; font-size:12px"
-        onkeydown="if(event.key==='Enter') liveSearch()" />
-      <button class="btn-primary" onclick="liveSearch()">buscar</button>
+    <div class="section-title">pesquisa</div>
+
+    <div class="search-block">
+      <div class="search-block-label">Produtos e cards por nome</div>
+      <div class="search-block-hint">busca produtos lacrados e cards avulsos · com sugestões</div>
+      <div style="display:flex; gap:8px">
+        <div class="search-wrap">
+          <input id="nameSearchInput" type="text" placeholder="Digite o nome do produto ou card..."
+            style="width:100%; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'Inter',sans-serif; font-size:14px"
+            oninput="onNameInput(this.value)"
+            onkeydown="if(event.key==='Enter') liveSearchByName()" />
+          <div id="autocompleteBox" class="autocomplete-list" style="display:none"></div>
+        </div>
+        <button class="btn-primary" onclick="liveSearchByName()">buscar</button>
+      </div>
+      <div id="nameSearchResults" style="margin-top:8px"></div>
     </div>
-    <div id="searchResults" style="margin-bottom:20px"></div>
+
+    <div class="search-block">
+      <div class="search-block-label">Cards por código</div>
+      <div class="search-block-hint">pesquisa exclusivamente cards avulsos (nunca produtos lacrados) · ex: 199/165, SV001/SV102</div>
+      <div style="display:flex; gap:8px">
+        <input id="codeSearchInput" type="text" placeholder="Digite o código, ex: 123/198..."
+          style="flex:1; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'JetBrains Mono',monospace; font-size:13px"
+          onkeydown="if(event.key==='Enter') liveSearchByCode()" />
+        <button class="btn-primary" onclick="liveSearchByCode()">buscar</button>
+      </div>
+      <div id="codeSearchResults" style="margin-top:8px"></div>
+    </div>
   `;
 
   let lastRunHtml = '';
@@ -197,6 +292,7 @@ function renderDashboard() {
   if (names.length === 0) {
     app.innerHTML = `
       ${searchBoxHtml}
+      <div class="section-title">itens monitorados</div>
       <div style="margin-bottom:12px">
         <span class="muted" style="font-size:14px">0 itens monitorados</span>
       </div>
@@ -206,7 +302,13 @@ function renderDashboard() {
     return;
   }
 
-  const cards = names.map(name => {
+  const sealedNames = names.filter(n => isSealedType(itemType(n)));
+  const cardNames = names.filter(n => !isSealedType(itemType(n)));
+  const typeOptions = distinctSealedTypes();
+
+  const filteredSealed = state.typeFilter === 'all' ? sealedNames : sealedNames.filter(n => itemType(n) === state.typeFilter);
+
+  const renderCard = (name) => {
     const q = bestQuoteFor(name);
     const market = itemMarket(name);
     const type = itemType(name);
@@ -218,17 +320,71 @@ function renderDashboard() {
         ${q ? `<div class="card-meta">via ${q.site} · ${fmtDateTime(q.timestamp, q.date)}</div>` : ''}
       </div>
     `;
-  }).join('');
+  };
+
+  const typeFilterHtml = typeOptions.length > 0 ? `
+    <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px">
+      <span class="muted" style="font-size:12px">Tipo de produto:</span>
+      <select class="filter-select" onchange="setTypeFilter(this.value)">
+        <option value="all" ${state.typeFilter === 'all' ? 'selected' : ''}>Todos</option>
+        ${typeOptions.map(t => `<option value="${t}" ${state.typeFilter === t ? 'selected' : ''}>${t}</option>`).join('')}
+      </select>
+    </div>
+  ` : '';
+
+  const sealedSectionHtml = `
+    <div class="section-title">produtos lacrados</div>
+    ${typeFilterHtml}
+    ${filteredSealed.length > 0
+      ? `<div class="grid">${filteredSealed.map(renderCard).join('')}</div>`
+      : `<div class="empty">Nenhum produto lacrado ${state.typeFilter !== 'all' ? `do tipo "${state.typeFilter}" ` : ''}monitorado.</div>`}
+  `;
+
+  const cardSectionHtml = cardNames.length > 0 ? `
+    <div class="section-title">cards avulsos</div>
+    <div class="grid">${cardNames.map(renderCard).join('')}</div>
+  ` : '';
 
   app.innerHTML = `
     ${searchBoxHtml}
-    <div class="section-title">itens monitorados</div>
-    <div style="margin-bottom:12px">
+    <div style="margin-bottom:4px">
       <span class="muted" style="font-size:14px">${names.length} item(ns) monitorado(s)</span>
     </div>
     ${lastRunHtml}
-    <div class="grid">${cards}</div>
+    ${sealedSectionHtml}
+    ${cardSectionHtml}
   `;
+}
+
+function setTypeFilter(value) {
+  state.typeFilter = value;
+  render();
+}
+
+function bucketLabel(date, mode) {
+  const month = date.getMonth(); // 0-11
+  const year = date.getFullYear();
+  if (mode === 'month') return date.toLocaleDateString('pt-BR', { month: 'short', year: '2-digit' });
+  if (mode === 'quarter') return `T${Math.floor(month / 3) + 1} ${year}`;
+  if (mode === 'semester') return `S${month < 6 ? 1 : 2} ${year}`;
+  if (mode === 'year') return `${year}`;
+}
+function bucketKey(date, mode) {
+  const month = date.getMonth();
+  const year = date.getFullYear();
+  if (mode === 'month') return `${year}-${String(month + 1).padStart(2, '0')}`;
+  if (mode === 'quarter') return `${year}-Q${Math.floor(month / 3) + 1}`;
+  if (mode === 'semester') return `${year}-S${month < 6 ? 1 : 2}`;
+  if (mode === 'year') return `${year}`;
+}
+function bucketSortKey(date, mode) {
+  // usado só pra ordenar os buckets cronologicamente
+  const month = date.getMonth();
+  const year = date.getFullYear();
+  if (mode === 'month') return year * 12 + month;
+  if (mode === 'quarter') return year * 4 + Math.floor(month / 3);
+  if (mode === 'semester') return year * 2 + (month < 6 ? 0 : 1);
+  return year;
 }
 
 function historyForItem(name, periodId) {
@@ -256,15 +412,32 @@ function historyForItem(name, periodId) {
       .sort((a, b) => a.sortKey - b.sortKey);
   }
 
-  // Períodos por dia (7D, 1M, 3M, 6M, 1A)
-  const cutoff = new Date(); cutoff.setDate(cutoff.getDate() - period.days);
-  const dayRows = rows.filter(r => new Date(r.date + 'T00:00:00') >= cutoff);
-  const byDate = {};
-  dayRows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r.price); });
-  return Object.keys(byDate).sort().map(date => ({
-    date, label: fmtDate(date),
-    price: Math.round((byDate[date].reduce((a, b) => a + b, 0) / byDate[date].length) * 100) / 100,
-  }));
+  // Mensal / Trimestral / Semestral / Anual — agregado por calendário real, não por dias corridos
+  const buckets = {};
+  rows.forEach(r => {
+    const d = new Date((r.timestamp || r.date + 'T00:00:00'));
+    const key = bucketKey(d, period.mode);
+    if (!buckets[key]) buckets[key] = { prices: [], label: bucketLabel(d, period.mode), sortKey: bucketSortKey(d, period.mode) };
+    buckets[key].prices.push(r.price);
+  });
+
+  return Object.values(buckets)
+    .sort((a, b) => a.sortKey - b.sortKey)
+    .slice(-period.buckets)
+    .map(b => ({ label: b.label, price: Math.round((b.prices.reduce((a, c) => a + c, 0) / b.prices.length) * 100) / 100 }));
+}
+
+function computeStats(name) {
+  const rows = state.history.filter(h => h.item === name).slice().sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date));
+  if (rows.length === 0) return null;
+  const prices = rows.map(r => r.price);
+  const min = Math.min(...prices);
+  const max = Math.max(...prices);
+  const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
+  const current = prices[prices.length - 1];
+  const first = prices[0];
+  const pctChange = first !== 0 ? ((current - first) / first) * 100 : 0;
+  return { min, max, avg, current, pctChange, count: prices.length };
 }
 
 function renderItem(name) {
@@ -287,6 +460,17 @@ function renderItem(name) {
 
   const periodTabsHtml = PERIODS.map(p => `<button class="${state.period === p.id ? 'active' : ''}" onclick="setPeriod('${p.id}')">${p.label}</button>`).join('');
 
+  const stats = computeStats(name);
+  const statsHtml = stats ? `
+    <div class="stats-grid">
+      <div class="stat-box"><div class="stat-label">mínimo</div><div class="stat-value">${fmtPrice(stats.min, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">máximo</div><div class="stat-value">${fmtPrice(stats.max, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">médio</div><div class="stat-value">${fmtPrice(stats.avg, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">atual</div><div class="stat-value">${fmtPrice(stats.current, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">variação</div><div class="stat-value" style="color:${stats.pctChange > 0 ? 'var(--red)' : stats.pctChange < 0 ? 'var(--green)' : 'var(--muted)'}">${stats.pctChange > 0 ? '+' : ''}${stats.pctChange.toFixed(1)}%</div></div>
+    </div>
+  ` : '';
+
   app.innerHTML = `
     <div class="card-type">${type} · ${market === 'BR' ? 'Brasil' : 'Internacional'}</div>
     <div class="card-name" style="font-size:24px; margin-bottom:16px">${name}</div>
@@ -299,9 +483,11 @@ function renderItem(name) {
     </div>
     <div class="section-title">cotações por site</div>
     ${rowsHtml}
-    <div class="section-title">histórico</div>
+    <div class="section-title">histórico de preços</div>
+    ${statsHtml}
     <div class="period-tabs">${periodTabsHtml}</div>
     <div class="chart-box"><canvas id="priceChart" height="180"></canvas></div>
+    ${stats && stats.count < 3 ? `<p class="muted" style="font-size:11px; margin-top:8px">Só ${stats.count} leitura(s) registrada(s) até agora — o gráfico fica mais informativo conforme o rastreamento automático acumula mais dados ao longo do tempo.</p>` : ''}
   `;
 
   drawChart(name);
