@@ -128,15 +128,17 @@ async function liveSearch() {
     resultsBox.innerHTML = `<div class="empty">A busca ao vivo ainda não foi configurada — falta colar a URL do Cloudflare Worker no topo deste arquivo (veja o README).</div>`;
     return;
   }
-  if (query.length < 3) {
-    resultsBox.innerHTML = `<div class="empty">Digite pelo menos 3 letras.</div>`;
+  if (query.length < 3 && !cardNumber) {
+    resultsBox.innerHTML = `<div class="empty">Digite pelo menos 3 letras no nome, ou preencha o número da carta.</div>`;
     return;
   }
+  // Se só o número da carta foi preenchido, usa ele como termo de busca também
+  const effectiveQuery = query.length >= 3 ? query : cardNumber;
 
   resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando${cardNumber ? ' (carta nº ' + cardNumber + ')' : ''}...</p>`;
 
   try {
-    const params = new URLSearchParams({ q: query });
+    const params = new URLSearchParams({ q: effectiveQuery });
     if (cardNumber) params.set('cardNumber', cardNumber);
     const res = await fetch(`${SEARCH_API}?${params.toString()}`);
     const data = await res.json();
