@@ -155,8 +155,69 @@ def search_generic(search_url_template, query, card_number=None):
     return price, url, "ok" if price is not None else "preco_nao_encontrado"
 
 
+def search_mypcards(search_url_template, query, card_number=None):
+    """MyP Cards não tem um formulário de busca livre público confirmado — cada
+    carta vive numa página própria por edição/número. Como estratégia prática,
+    buscamos a listagem geral de Pokémon (que mostra vários anúncios recentes
+    com nome, número e preço no próprio texto) e procuramos por um card cujo
+    texto bata com a query E o número informado. Cobertura parcial: só pega
+    o que estiver nessa listagem no momento — não é uma busca completa do
+    catálogo. Precisa de card_number pra ser confiável."""
+    if not card_number:
+        return None, None, "requer_numero_de_carta"
+
+    url = search_url_template.format(query=urllib.parse.quote_plus(query))
+    soup = fetch(url)
+    number_part = card_number.split("/")[0].strip()
+
+    candidates = soup.select("li, article, div.produto, div[class*=produto]")
+    for item in candidates:
+        text = item.get_text(" ", strip=True)
+        if number_part in re.sub(r"\s+", "", text) and any(w.lower() in text.lower() for w in query.split()[:2]):
+            link_tag = item.select_one("a[href*='/produto/']")
+            product_url = link_tag["href"] if link_tag and link_tag.has_attr("href") else None
+            if product_url and not product_url.startswith("http"):
+                product_url = "https://mypcards.com" + product_url
+            match = re.search(r"R\$\s?\d{1,3}(?:\.\d{3})*[,.]\d{2}", text)
+            price = to_float(match.group()) if match else None
+            if price is not None:
+                return price, product_url, "ok"
+
+    return None, url, "nao_encontrado_na_listagem_atual"
+
+
+def search_cardtrader(search_url_template, query, card_number=None):
+    """CardTrader é uma plataforma internacional (cardtrader.com) — preços
+    aparecem na moeda padrão do site (geralmente EUR ou USD), não R$.
+    Trate como referência de preço internacional, não brasileira."""
+    url = search_url_template.format(query=urllib.parse.quote_plus(query))
+    soup = fetch(url)
+    candidates = soup.select("a[href*='/cards/'], div[class*=product], li[class*=product]")
+    if not candidates:
+        return None, None, "sem_resultado"
+
+    chosen = None
+    for item in candidates[:8]:
+        text = item.get_text(" ", strip=True)
+        if result_matches_card_number(text, card_number):
+            chosen = item
+            break
+    if not chosen:
+        return None, None, "numero_nao_confere"
+
+    text = chosen.get_text(" ", strip=True)
+    href = chosen.get("href") if chosen.name == "a" else (chosen.select_one("a")["href"] if chosen.select_one("a") else None)
+    product_url = ("https://www.cardtrader.com" + href) if href and not href.startswith("http") else href
+    match = re.search(r"[\$€£]\s?\d{1,3}(?:[.,]\d{3})*(?:[.,]\d{2})?", text)
+    price = to_float(match.group()) if match else None
+
+    return price, product_url, "ok" if price is not None else "preco_nao_encontrado"
+
+
 STRATEGIES = {
     "woocommerce_search": search_woocommerce,
+    "mypcards_search": search_mypcards,
+    "cardtrader_search": search_cardtrader,
     "mercadolivre_search": search_mercadolivre,
     "amazon_search": search_amazon,
     "generic_search": search_generic,
