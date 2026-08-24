@@ -121,6 +121,7 @@ function itemType(name) {
 async function liveSearch() {
   const input = document.getElementById('searchInput');
   const query = input.value.trim();
+  const cardNumber = document.getElementById('cardNumberInput').value.trim();
   const resultsBox = document.getElementById('searchResults');
 
   if (!SEARCH_API) {
@@ -132,10 +133,12 @@ async function liveSearch() {
     return;
   }
 
-  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando em Loja Pokémon Super, Mercado Livre e Amazon...</p>`;
+  resultsBox.innerHTML = `<p class="muted" style="font-size:13px">Buscando${cardNumber ? ' (carta nº ' + cardNumber + ')' : ''}...</p>`;
 
   try {
-    const res = await fetch(`${SEARCH_API}?q=${encodeURIComponent(query)}`);
+    const params = new URLSearchParams({ q: query });
+    if (cardNumber) params.set('cardNumber', cardNumber);
+    const res = await fetch(`${SEARCH_API}?${params.toString()}`);
     const data = await res.json();
     const found = (data.results || []).filter(r => r.price !== null);
     const notFound = (data.results || []).filter(r => r.price === null);
@@ -175,6 +178,9 @@ function renderDashboard() {
     <div style="display:flex; gap:8px; margin-bottom:8px">
       <input id="searchInput" type="text" placeholder="ex: box fogo fantasmagorico"
         style="flex:1; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'Inter',sans-serif; font-size:14px"
+        onkeydown="if(event.key==='Enter') liveSearch()" />
+      <input id="cardNumberInput" type="text" placeholder="nº carta (opcional, ex: 199/165)"
+        style="width:170px; background:var(--panel); border:1px solid var(--border); color:var(--text); border-radius:10px; padding:10px 12px; font-family:'JetBrains Mono',monospace; font-size:12px"
         onkeydown="if(event.key==='Enter') liveSearch()" />
       <button class="btn-primary" onclick="liveSearch()">buscar</button>
     </div>
@@ -365,4 +371,3 @@ loadData();
 </script>
 </body>
 </html>
-
