@@ -71,6 +71,7 @@ const API = "./data.json";
 const SEARCH_API = "https://pokemon-price-search.wilucholiveira.workers.dev"; // ex: https://pokemon-price-search.seu-usuario.workers.dev
 const AUTOCOMPLETE_API = "https://api.pokemontcg.io/v2/cards"; // API pública gratuita, só pra sugestões de nome (não usada pra preço)
 let state = { history: [], latest: {}, lastRun: null, view: "dashboard", selected: null, period: 'monthly', chart: null, typeFilter: 'all' };
+let searchCharts = {}; // um Chart.js por área de busca (nome/código), pra não conflitar com o gráfico da tela de detalhe
 let autocompleteTimer = null;
 
 const PERIODS = [
@@ -197,7 +198,7 @@ async function liveSearchByName() {
   try {
     const res = await fetch(`${SEARCH_API}?mode=name&q=${encodeURIComponent(query)}`);
     const data = await res.json();
-    renderSearchResults(data, resultsBox, query, query, 'box');
+    renderSearchResults(data, resultsBox, query, query, 'box', 'nameSearch');
   } catch (e) {
     resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
   }
@@ -223,13 +224,13 @@ async function liveSearchByCode() {
     const data = await res.json();
     const bestResult = (data.results || []).find(r => r.price !== null);
     const derivedName = bestResult && bestResult.title ? bestResult.title : `Carta nº ${cardNumber}`;
-    renderSearchResults(data, resultsBox, cardNumber, derivedName, 'card');
+    renderSearchResults(data, resultsBox, cardNumber, derivedName, 'card', 'codeSearch');
   } catch (e) {
     resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
   }
 }
 
-function renderSearchResults(data, resultsBox, term, itemName, itemType) {
+function renderSearchResults(data, resultsBox, term, itemName, itemType, chartKey) {
   const found = (data.results || []).filter(r => r.price !== null);
   const notFound = (data.results || []).filter(r => r.price === null);
 
@@ -258,10 +259,8 @@ function renderSearchResults(data, resultsBox, term, itemName, itemType) {
     ? `<p class="muted" style="font-size:11px; margin-top:6px">sem resultado em: ${notFound.map(r => r.site).join(', ')}</p>`
     : '';
 
-  resultsBox.innerHTML = rowsHtml + notFoundNote + `<p class="muted" style="font-size:10px; margin-top:6px">✓ salvo no histórico automaticamente</p>`;
-
-  // Atualiza o estado local com o que acabou de ser encontrado, e refaz só a
-  // lista de itens rastreados — sem redesenhar a busca (preserva o que foi digitado).
+  // Atualiza o estado local com o que acabou de ser encontrado, antes de montar o histórico —
+  // assim o próprio resultado dessa busca já entra no gráfico, sem esperar recarregar a página.
   const today = new Date().toISOString().slice(0, 10);
   const timestamp = new Date().toISOString();
   state.latest[itemName] = state.latest[itemName] || {};
@@ -269,7 +268,80 @@ function renderSearchResults(data, resultsBox, term, itemName, itemType) {
     state.history.push({ date: today, timestamp, item: itemName, type: itemType, market: 'BR', site: r.site, price: r.price, matchedUrl: r.url });
     state.latest[itemName][r.site] = { price: r.price, date: today, timestamp, url: r.url };
   });
+
+  resultsBox.innerHTML = `
+    ${rowsHtml}
+    ${notFoundNote}
+    <p class="muted" style="font-size:10px; margin-top:6px">✓ salvo no histórico automaticamente</p>
+    <div class="section-title" style="margin-top:14px">preços históricos</div>
+    <div id="${chartKey}-history"></div>
+  `;
+
+  renderMiniHistoryChart(itemName, 'BR', chartKey);
   renderTrackedItemsSection();
+}
+
+function renderMiniHistoryChart(itemName, market, chartKey) {
+  const container = document.getElementById(`${chartKey}-history`);
+  if (!container) return;
+
+  const rows = state.history
+    .filter(h => h.item === itemName)
+    .slice()
+    .sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date));
+
+  if (rows.length < 2) {
+    container.innerHTML = `<p class="muted" style="font-size:12px">Só ${rows.length} leitura registrada até agora — o gráfico aparece conforme você (ou outra pessoa) repetir essa busca ao longo do tempo. Cada busca vira um ponto novo.</p>`;
+    return;
+  }
+
+  // Uma leitura por dia (média, se houve mais de uma no mesmo dia) — simples e direto pra pré-visualização na busca
+  const byDate = {};
+  rows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r.price); });
+  const points = Object.keys(byDate).sort().map(date => ({
+    label: fmtDate(date),
+    price: Math.round((byDate[date].reduce((a, b) => a + b, 0) / byDate[date].length) * 100) / 100,
+  }));
+
+  const min = Math.min(...points.map(p => p.price));
+  const max = Math.max(...points.map(p => p.price));
+  const current = points[points.length - 1].price;
+  const first = points[0].price;
+  const pctChange = first !== 0 ? ((current - first) / first) * 100 : 0;
+
+  container.innerHTML = `
+    <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr) !important">
+      <div class="stat-box"><div class="stat-label">mínimo</div><div class="stat-value">${fmtPrice(min, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">máximo</div><div class="stat-value">${fmtPrice(max, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">variação</div><div class="stat-value" style="color:${pctChange > 0 ? 'var(--red)' : pctChange < 0 ? 'var(--green)' : 'var(--muted)'}">${pctChange > 0 ? '+' : ''}${pctChange.toFixed(1)}%</div></div>
+    </div>
+    <div class="chart-box"><canvas id="${chartKey}-canvas" height="140"></canvas></div>
+  `;
+
+  const ctx = document.getElementById(`${chartKey}-canvas`).getContext('2d');
+  if (searchCharts[chartKey]) searchCharts[chartKey].destroy();
+  searchCharts[chartKey] = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: points.map(p => p.label),
+      datasets: [{
+        data: points.map(p => p.price),
+        borderColor: '#17D6B0',
+        backgroundColor: 'rgba(23,214,176,0.15)',
+        fill: true,
+        tension: 0.3,
+        pointRadius: 3,
+      }]
+    },
+    options: {
+      responsive: true,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#8B90A8', font: { size: 10 } }, grid: { color: '#2A2F49' } },
+        y: { ticks: { color: '#8B90A8', font: { size: 10 } }, grid: { color: '#2A2F49' } },
+      }
+    }
+  });
 }
 
 function renderDashboard() {
