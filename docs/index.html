@@ -103,11 +103,17 @@ function fmtDateTime(timestampUTC, dateOnly) {
 }
 
 async function loadData() {
-  const res = await fetch(API + "?t=" + Date.now()); // evita cache velho do navegador
-  const data = await res.json();
-  state.history = data.history || [];
-  state.latest = data.latest || {};
-  state.lastRun = data.lastRun;
+  // Duas fontes de dados: o rastreamento automático (data.json, via GitHub Actions)
+  // e o histórico de buscas ao vivo (via Worker/KV) — mescladas numa única lista.
+  const [trackedData, liveSearchData] = await Promise.all([
+    fetch(API + "?t=" + Date.now()).then(r => r.json()).catch(() => ({ history: [], latest: {} })),
+    (SEARCH_API ? fetch(`${SEARCH_API}?action=history`).then(r => r.json()) : Promise.resolve({ history: [], latest: {} }))
+      .catch(() => ({ history: [], latest: {} })), // se o Worker falhar, o painel continua funcionando só com o rastreamento
+  ]);
+
+  state.history = [...(trackedData.history || []), ...(liveSearchData.history || [])];
+  state.latest = { ...(liveSearchData.latest || {}), ...(trackedData.latest || {}) }; // rastreado tem prioridade em caso de mesmo nome
+  state.lastRun = trackedData.lastRun;
   render();
 }
 
@@ -191,7 +197,7 @@ async function liveSearchByName() {
   try {
     const res = await fetch(`${SEARCH_API}?mode=name&q=${encodeURIComponent(query)}`);
     const data = await res.json();
-    renderSearchResults(data, resultsBox, query);
+    renderSearchResults(data, resultsBox, query, query, 'box');
   } catch (e) {
     resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
   }
@@ -215,13 +221,15 @@ async function liveSearchByCode() {
   try {
     const res = await fetch(`${SEARCH_API}?mode=code&cardNumber=${encodeURIComponent(cardNumber)}`);
     const data = await res.json();
-    renderSearchResults(data, resultsBox, cardNumber);
+    const bestResult = (data.results || []).find(r => r.price !== null);
+    const derivedName = bestResult && bestResult.title ? bestResult.title : `Carta nº ${cardNumber}`;
+    renderSearchResults(data, resultsBox, cardNumber, derivedName, 'card');
   } catch (e) {
     resultsBox.innerHTML = `<div class="empty">Erro ao buscar: ${e.message}</div>`;
   }
 }
 
-function renderSearchResults(data, resultsBox, term) {
+function renderSearchResults(data, resultsBox, term, itemName, itemType) {
   const found = (data.results || []).filter(r => r.price !== null);
   const notFound = (data.results || []).filter(r => r.price === null);
 
@@ -250,13 +258,23 @@ function renderSearchResults(data, resultsBox, term) {
     ? `<p class="muted" style="font-size:11px; margin-top:6px">sem resultado em: ${notFound.map(r => r.site).join(', ')}</p>`
     : '';
 
-  resultsBox.innerHTML = rowsHtml + notFoundNote;
+  resultsBox.innerHTML = rowsHtml + notFoundNote + `<p class="muted" style="font-size:10px; margin-top:6px">✓ salvo no histórico automaticamente</p>`;
+
+  // Atualiza o estado local com o que acabou de ser encontrado, e refaz só a
+  // lista de itens rastreados — sem redesenhar a busca (preserva o que foi digitado).
+  const today = new Date().toISOString().slice(0, 10);
+  const timestamp = new Date().toISOString();
+  state.latest[itemName] = state.latest[itemName] || {};
+  found.forEach(r => {
+    state.history.push({ date: today, timestamp, item: itemName, type: itemType, market: 'BR', site: r.site, price: r.price, matchedUrl: r.url });
+    state.latest[itemName][r.site] = { price: r.price, date: today, timestamp, url: r.url };
+  });
+  renderTrackedItemsSection();
 }
 
 function renderDashboard() {
   const app = document.getElementById('app');
   document.getElementById('backBtn').style.display = 'none';
-  const names = itemNames();
 
   const searchBoxHtml = `
     <div class="section-title">pesquisa</div>
@@ -290,20 +308,28 @@ function renderDashboard() {
     </div>
   `;
 
+  app.innerHTML = `${searchBoxHtml}<div id="trackedItemsSection"></div>`;
+  renderTrackedItemsSection();
+}
+
+function renderTrackedItemsSection() {
+  const container = document.getElementById('trackedItemsSection');
+  if (!container) return; // não está na tela do dashboard agora — nada a fazer
+  const names = itemNames();
+
   let lastRunHtml = '';
   if (state.lastRun) {
     lastRunHtml = `<p class="muted" style="font-size:12px">última execução: ${fmtDateTime(state.lastRun.timestamp, state.lastRun.date)} · ${state.lastRun.okCount || 0} preço(s) encontrados · atualiza sozinho a cada 1 hora</p>`;
   }
 
   if (names.length === 0) {
-    app.innerHTML = `
-      ${searchBoxHtml}
+    container.innerHTML = `
       <div class="section-title">itens monitorados</div>
       <div style="margin-bottom:12px">
         <span class="muted" style="font-size:14px">0 itens monitorados</span>
       </div>
       ${lastRunHtml}
-      <div class="empty">Nenhum dado ainda. O GitHub Actions ainda não rodou a primeira busca — vá na aba <b>Actions</b> do repositório e clique em "Run workflow" pra rodar agora, sem esperar o agendamento de amanhã.<br><br>Pra adicionar produtos, edite <code>products.json</code> no repositório e faça commit.</div>
+      <div class="empty">Nenhum dado ainda. O GitHub Actions ainda não rodou a primeira busca — vá na aba <b>Actions</b> do repositório e clique em "Run workflow" pra rodar agora, sem esperar o agendamento de amanhã. Ou faça uma busca ao vivo aqui em cima — toda busca com resultado passa a ser monitorada automaticamente.</div>
     `;
     return;
   }
@@ -351,8 +377,7 @@ function renderDashboard() {
     <div class="grid">${cardNames.map(renderCard).join('')}</div>
   ` : '';
 
-  app.innerHTML = `
-    ${searchBoxHtml}
+  container.innerHTML = `
     <div style="margin-bottom:4px">
       <span class="muted" style="font-size:14px">${names.length} item(ns) monitorado(s)</span>
     </div>
@@ -364,7 +389,7 @@ function renderDashboard() {
 
 function setTypeFilter(value) {
   state.typeFilter = value;
-  render();
+  renderTrackedItemsSection(); // só atualiza a lista, não redesenha a busca
 }
 
 function bucketLabel(date, mode) {
