@@ -4,7 +4,8 @@
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>Binder — Monitor de Preços Pokémon TCG</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.4/chart.umd.min.js"
+  onerror="this.onerror=null; var s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js'; document.head.appendChild(s);"></script>
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@500;600;700&display=swap');
   :root {
@@ -277,7 +278,14 @@ function renderSearchResults(data, resultsBox, term, itemName, itemType, chartKe
     <div id="${chartKey}-history"></div>
   `;
 
-  renderMiniHistoryChart(itemName, 'BR', chartKey);
+  // Isolado num try/catch próprio: se o gráfico falhar por qualquer motivo
+  // (ex: biblioteca de gráfico não carregou), os preços acima continuam visíveis.
+  try {
+    renderMiniHistoryChart(itemName, 'BR', chartKey);
+  } catch (e) {
+    const historyBox = document.getElementById(`${chartKey}-history`);
+    if (historyBox) historyBox.innerHTML = `<p class="muted" style="font-size:12px">Não consegui montar o gráfico agora (${e.message}). Os preços encontrados acima continuam válidos.</p>`;
+  }
   renderTrackedItemsSection();
 }
 
@@ -309,14 +317,23 @@ function renderMiniHistoryChart(itemName, market, chartKey) {
   const first = points[0].price;
   const pctChange = first !== 0 ? ((current - first) / first) * 100 : 0;
 
-  container.innerHTML = `
+  const statsHtml = `
     <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr) !important">
       <div class="stat-box"><div class="stat-label">mínimo</div><div class="stat-value">${fmtPrice(min, market)}</div></div>
       <div class="stat-box"><div class="stat-label">máximo</div><div class="stat-value">${fmtPrice(max, market)}</div></div>
       <div class="stat-box"><div class="stat-label">variação</div><div class="stat-value" style="color:${pctChange > 0 ? 'var(--red)' : pctChange < 0 ? 'var(--green)' : 'var(--muted)'}">${pctChange > 0 ? '+' : ''}${pctChange.toFixed(1)}%</div></div>
     </div>
-    <div class="chart-box"><canvas id="${chartKey}-canvas" height="140"></canvas></div>
   `;
+
+  // Se a biblioteca de gráfico não carregou (ex: CDN bloqueado por rede/extensão do navegador),
+  // mostra a lista de preços em texto em vez de travar — a informação continua disponível.
+  if (typeof Chart === 'undefined') {
+    const listHtml = points.map(p => `<div class="row" style="padding:8px 12px"><span class="muted" style="font-size:12px">${p.label}</span><span style="font-family:'JetBrains Mono',monospace; font-size:13px">${fmtPrice(p.price, market)}</span></div>`).join('');
+    container.innerHTML = `${statsHtml}<p class="muted" style="font-size:11px; margin:8px 0">Gráfico indisponível no momento (biblioteca de gráfico não carregou) — histórico em lista:</p>${listHtml}`;
+    return;
+  }
+
+  container.innerHTML = `${statsHtml}<div class="chart-box"><canvas id="${chartKey}-canvas" height="140"></canvas></div>`;
 
   const ctx = document.getElementById(`${chartKey}-canvas`).getContext('2d');
   if (searchCharts[chartKey]) searchCharts[chartKey].destroy();
@@ -593,7 +610,13 @@ function renderItem(name) {
     ${stats && stats.count < 3 ? `<p class="muted" style="font-size:11px; margin-top:8px">Só ${stats.count} leitura(s) registrada(s) até agora — o gráfico fica mais informativo conforme o rastreamento automático acumula mais dados ao longo do tempo.</p>` : ''}
   `;
 
-  drawChart(name);
+  // Isolado: se o gráfico falhar (ex: biblioteca não carregou), o resto da tela do item continua normal.
+  try {
+    drawChart(name);
+  } catch (e) {
+    const box = document.querySelector('.chart-box');
+    if (box) box.innerHTML = `<p class="muted" style="font-size:12px; padding:20px">Não consegui montar o gráfico agora (${e.message}).</p>`;
+  }
 }
 
 function drawChart(name) {
@@ -605,6 +628,13 @@ function drawChart(name) {
     ctx.fillStyle = '#8B90A8';
     ctx.font = '13px Inter';
     ctx.fillText('Dados insuficientes para este período.', 10, 90);
+    return;
+  }
+
+  if (typeof Chart === 'undefined') {
+    ctx.fillStyle = '#8B90A8';
+    ctx.font = '13px Inter';
+    ctx.fillText('Gráfico indisponível (biblioteca não carregou). Tente atualizar a página.', 10, 90);
     return;
   }
 
