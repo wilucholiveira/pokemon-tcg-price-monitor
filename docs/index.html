@@ -293,42 +293,34 @@ function renderMiniHistoryChart(itemName, market, chartKey) {
   const container = document.getElementById(`${chartKey}-history`);
   if (!container) return;
 
-  const rows = state.history
-    .filter(h => h.item === itemName)
-    .slice()
-    .sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date));
-
+  const rows = state.history.filter(h => h.item === itemName);
   if (rows.length < 2) {
     container.innerHTML = `<p class="muted" style="font-size:12px">Só ${rows.length} leitura registrada até agora — o gráfico aparece conforme você (ou outra pessoa) repetir essa busca ao longo do tempo. Cada busca vira um ponto novo.</p>`;
     return;
   }
 
-  // Uma leitura por dia (média, se houve mais de uma no mesmo dia) — simples e direto pra pré-visualização na busca
-  const byDate = {};
-  rows.forEach(r => { (byDate[r.date] = byDate[r.date] || []).push(r.price); });
-  const points = Object.keys(byDate).sort().map(date => ({
-    label: fmtDate(date),
-    price: Math.round((byDate[date].reduce((a, b) => a + b, 0) / byDate[date].length) * 100) / 100,
-  }));
-
-  const min = Math.min(...points.map(p => p.price));
-  const max = Math.max(...points.map(p => p.price));
-  const current = points[points.length - 1].price;
-  const first = points[0].price;
-  const pctChange = first !== 0 ? ((current - first) / first) * 100 : 0;
+  const allPrices = rows.map(r => r.price);
+  const min = Math.min(...allPrices);
+  const max = Math.max(...allPrices);
+  const distinctSites = new Set(rows.map(r => r.site)).size;
 
   const statsHtml = `
     <div class="stats-grid" style="grid-template-columns: repeat(3, 1fr) !important">
       <div class="stat-box"><div class="stat-label">mínimo</div><div class="stat-value">${fmtPrice(min, market)}</div></div>
       <div class="stat-box"><div class="stat-label">máximo</div><div class="stat-value">${fmtPrice(max, market)}</div></div>
-      <div class="stat-box"><div class="stat-label">variação</div><div class="stat-value" style="color:${pctChange > 0 ? 'var(--red)' : pctChange < 0 ? 'var(--green)' : 'var(--muted)'}">${pctChange > 0 ? '+' : ''}${pctChange.toFixed(1)}%</div></div>
+      <div class="stat-box"><div class="stat-label">sites</div><div class="stat-value">${distinctSites}</div></div>
     </div>
   `;
 
-  // Se a biblioteca de gráfico não carregou (ex: CDN bloqueado por rede/extensão do navegador),
-  // mostra a lista de preços em texto em vez de travar — a informação continua disponível.
+  // Usa o período "mensal" como janela padrão pra pré-visualização na busca —
+  // consistente com a tela de detalhe do item, e uma linha por site (nunca mistura
+  // preços de sites diferentes, que podem ser produtos ligeiramente diferentes).
+  const { labels, datasets } = historyForItemBySite(itemName, 'monthly');
+
   if (typeof Chart === 'undefined') {
-    const listHtml = points.map(p => `<div class="row" style="padding:8px 12px"><span class="muted" style="font-size:12px">${p.label}</span><span style="font-family:'JetBrains Mono',monospace; font-size:13px">${fmtPrice(p.price, market)}</span></div>`).join('');
+    // Sem a biblioteca de gráfico, mostra a lista de leituras em texto — a informação continua disponível.
+    const listHtml = rows.slice().sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date))
+      .map(r => `<div class="row" style="padding:8px 12px"><span class="muted" style="font-size:12px">${r.site} · ${fmtDate(r.date)}</span><span style="font-family:'JetBrains Mono',monospace; font-size:13px">${fmtPrice(r.price, market)}</span></div>`).join('');
     container.innerHTML = `${statsHtml}<p class="muted" style="font-size:11px; margin:8px 0">Gráfico indisponível no momento (biblioteca de gráfico não carregou) — histórico em lista:</p>${listHtml}`;
     return;
   }
@@ -340,19 +332,21 @@ function renderMiniHistoryChart(itemName, market, chartKey) {
   searchCharts[chartKey] = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: points.map(p => p.label),
-      datasets: [{
-        data: points.map(p => p.price),
-        borderColor: '#17D6B0',
-        backgroundColor: 'rgba(23,214,176,0.15)',
-        fill: true,
+      labels,
+      datasets: datasets.map(ds => ({
+        label: ds.site,
+        data: ds.data,
+        borderColor: ds.color,
+        backgroundColor: ds.color + '26',
+        fill: false,
         tension: 0.3,
         pointRadius: 3,
-      }]
+        spanGaps: true,
+      })),
     },
     options: {
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: { legend: { display: datasets.length > 1, position: 'bottom', labels: { color: '#8B90A8', font: { size: 10 }, boxWidth: 8 } } },
       scales: {
         x: { ticks: { color: '#8B90A8', font: { size: 10 } }, grid: { color: '#2A2F49' } },
         y: { ticks: { color: '#8B90A8', font: { size: 10 } }, grid: { color: '#2A2F49' } },
@@ -507,57 +501,84 @@ function bucketSortKey(date, mode) {
   return year;
 }
 
-function historyForItem(name, periodId) {
+const SITE_COLORS = ['#17D6B0', '#FF4FA3', '#E8B93F', '#7C9EFF', '#FF8A5C', '#B08FFF'];
+function colorForSite(site, allSites) {
+  const idx = allSites.indexOf(site);
+  return SITE_COLORS[idx % SITE_COLORS.length];
+}
+
+function historyForItemBySite(name, periodId) {
   const period = PERIODS.find(p => p.id === periodId) || PERIODS[1];
   const rows = state.history.filter(h => h.item === name);
+  const sites = Array.from(new Set(rows.map(r => r.site))).sort();
 
-  if (period.mode === 'hour') {
-    // "Hoje": últimas 24h, agrupado por hora, usando o timestamp (convertido pra Brasília)
-    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-    const todayRows = rows.filter(r => r.timestamp && new Date(r.timestamp).getTime() >= cutoff);
-    const byHour = {};
-    todayRows.forEach(r => {
-      const d = new Date(r.timestamp);
-      const hourLabel = d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }) + 'h';
-      byHour[hourLabel] = byHour[hourLabel] || { prices: [], sortKey: d.getTime() };
-      byHour[hourLabel].prices.push(r.price);
-      byHour[hourLabel].sortKey = Math.min(byHour[hourLabel].sortKey, d.getTime());
-    });
-    return Object.entries(byHour)
-      .map(([label, { prices, sortKey }]) => ({
-        label,
-        price: Math.round((prices.reduce((a, b) => a + b, 0) / prices.length) * 100) / 100,
-        sortKey,
-      }))
-      .sort((a, b) => a.sortKey - b.sortKey);
-  }
+  // Agrupa cada leitura no seu bucket (hora/mês/trimestre/semestre/ano), já separado por site —
+  // assim o preço de um site nunca se mistura com o de outro (evita misturar produtos diferentes
+  // que só coincidem no nome pesquisado).
+  const perSiteBuckets = {}; // site -> { bucketKey -> { prices, label, sortKey } }
+  sites.forEach(s => perSiteBuckets[s] = {});
 
-  // Mensal / Trimestral / Semestral / Anual — agregado por calendário real, não por dias corridos
-  const buckets = {};
   rows.forEach(r => {
-    const d = new Date((r.timestamp || r.date + 'T00:00:00'));
-    const key = bucketKey(d, period.mode);
-    if (!buckets[key]) buckets[key] = { prices: [], label: bucketLabel(d, period.mode), sortKey: bucketSortKey(d, period.mode) };
-    buckets[key].prices.push(r.price);
+    const d = new Date(r.timestamp || (r.date + 'T00:00:00'));
+    let key, label, sortKey;
+    if (period.mode === 'hour') {
+      const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+      if (!r.timestamp || d.getTime() < cutoff) return;
+      key = d.toLocaleString('pt-BR', { timeZone: 'America/Sao_Paulo', hour: '2-digit', hour12: false }) + 'h';
+      label = key;
+      sortKey = d.getTime();
+    } else {
+      key = bucketKey(d, period.mode);
+      label = bucketLabel(d, period.mode);
+      sortKey = bucketSortKey(d, period.mode);
+    }
+    const bucket = perSiteBuckets[r.site];
+    bucket[key] = bucket[key] || { prices: [], label, sortKey };
+    bucket[key].prices.push(r.price);
   });
 
-  return Object.values(buckets)
-    .sort((a, b) => a.sortKey - b.sortKey)
-    .slice(-period.buckets)
-    .map(b => ({ label: b.label, price: Math.round((b.prices.reduce((a, c) => a + c, 0) / b.prices.length) * 100) / 100 }));
+  // União de todos os buckets que aparecem em qualquer site, ordenada cronologicamente
+  const allBucketKeys = new Map(); // key -> { label, sortKey }
+  sites.forEach(s => Object.entries(perSiteBuckets[s]).forEach(([k, b]) => {
+    if (!allBucketKeys.has(k)) allBucketKeys.set(k, { label: b.label, sortKey: b.sortKey });
+  }));
+  let orderedKeys = Array.from(allBucketKeys.entries()).sort((a, b) => a[1].sortKey - b[1].sortKey);
+  if (period.mode !== 'hour') orderedKeys = orderedKeys.slice(-period.buckets);
+
+  const labels = orderedKeys.map(([, v]) => v.label);
+  const datasets = sites.map(site => ({
+    site,
+    color: colorForSite(site, sites),
+    data: orderedKeys.map(([k]) => {
+      const bucket = perSiteBuckets[site][k];
+      if (!bucket || bucket.prices.length === 0) return null; // sem leitura desse site nesse período — deixa vazio, não inventa
+      return Math.round((bucket.prices.reduce((a, c) => a + c, 0) / bucket.prices.length) * 100) / 100;
+    }),
+  })).filter(ds => ds.data.some(v => v !== null)); // remove site sem nenhum ponto no período visível
+
+  return { labels, datasets };
 }
 
 function computeStats(name) {
-  const rows = state.history.filter(h => h.item === name).slice().sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date));
+  const rows = state.history.filter(h => h.item === name);
   if (rows.length === 0) return null;
   const prices = rows.map(r => r.price);
   const min = Math.min(...prices);
   const max = Math.max(...prices);
   const avg = prices.reduce((a, b) => a + b, 0) / prices.length;
-  const current = prices[prices.length - 1];
-  const first = prices[0];
+
+  // "Atual" e "variação" usam o site com mais leituras registradas — evita misturar
+  // a tendência de sites diferentes (que às vezes vendem produtos ligeiramente diferentes
+  // sob o mesmo nome pesquisado) numa única variação enganosa.
+  const bySite = {};
+  rows.forEach(r => { (bySite[r.site] = bySite[r.site] || []).push(r); });
+  const [mainSiteName, mainSiteRows] = Object.entries(bySite).sort((a, b) => b[1].length - a[1].length)[0];
+  const sorted = mainSiteRows.slice().sort((a, b) => (a.timestamp || a.date).localeCompare(b.timestamp || b.date));
+  const current = sorted[sorted.length - 1].price;
+  const first = sorted[0].price;
   const pctChange = first !== 0 ? ((current - first) / first) * 100 : 0;
-  return { min, max, avg, current, pctChange, count: prices.length };
+
+  return { min, max, avg, current, pctChange, count: prices.length, mainSiteName };
 }
 
 function renderItem(name) {
@@ -586,7 +607,7 @@ function renderItem(name) {
       <div class="stat-box"><div class="stat-label">mínimo</div><div class="stat-value">${fmtPrice(stats.min, market)}</div></div>
       <div class="stat-box"><div class="stat-label">máximo</div><div class="stat-value">${fmtPrice(stats.max, market)}</div></div>
       <div class="stat-box"><div class="stat-label">médio</div><div class="stat-value">${fmtPrice(stats.avg, market)}</div></div>
-      <div class="stat-box"><div class="stat-label">atual</div><div class="stat-value">${fmtPrice(stats.current, market)}</div></div>
+      <div class="stat-box"><div class="stat-label">atual (${stats.mainSiteName})</div><div class="stat-value">${fmtPrice(stats.current, market)}</div></div>
       <div class="stat-box"><div class="stat-label">variação</div><div class="stat-value" style="color:${stats.pctChange > 0 ? 'var(--red)' : stats.pctChange < 0 ? 'var(--green)' : 'var(--muted)'}">${stats.pctChange > 0 ? '+' : ''}${stats.pctChange.toFixed(1)}%</div></div>
     </div>
   ` : '';
@@ -620,11 +641,12 @@ function renderItem(name) {
 }
 
 function drawChart(name) {
-  const data = historyForItem(name, state.period);
+  const { labels, datasets } = historyForItemBySite(name, state.period);
   const ctx = document.getElementById('priceChart').getContext('2d');
   if (state.chart) state.chart.destroy();
 
-  if (data.length < 2) {
+  const hasEnoughData = datasets.some(ds => ds.data.filter(v => v !== null).length >= 2);
+  if (!hasEnoughData) {
     ctx.fillStyle = '#8B90A8';
     ctx.font = '13px Inter';
     ctx.fillText('Dados insuficientes para este período.', 10, 90);
@@ -641,20 +663,23 @@ function drawChart(name) {
   state.chart = new Chart(ctx, {
     type: 'line',
     data: {
-      labels: data.map(d => d.label),
-      datasets: [{
-        label: 'preço médio',
-        data: data.map(d => d.price),
-        borderColor: '#17D6B0',
-        backgroundColor: 'rgba(23,214,176,0.15)',
-        fill: true,
+      labels,
+      datasets: datasets.map(ds => ({
+        label: ds.site,
+        data: ds.data,
+        borderColor: ds.color,
+        backgroundColor: ds.color + '26', // leve transparência no preenchimento
+        fill: false,
         tension: 0.3,
-        pointRadius: 2,
-      }]
+        pointRadius: 3,
+        spanGaps: true, // conecta visualmente por cima de períodos sem leitura daquele site
+      })),
     },
     options: {
       responsive: true,
-      plugins: { legend: { display: false } },
+      plugins: {
+        legend: { display: datasets.length > 1, position: 'bottom', labels: { color: '#8B90A8', font: { size: 11 }, boxWidth: 10 } },
+      },
       scales: {
         x: { ticks: { color: '#8B90A8', font: { size: 11 } }, grid: { color: '#2A2F49' } },
         y: { ticks: { color: '#8B90A8', font: { size: 11 } }, grid: { color: '#2A2F49' } },
